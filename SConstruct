@@ -14,6 +14,7 @@ env_without_err = Environment(CCFLAGS = '-g -std=c99 -D_GNU_SOURCE -O2 -pthread 
 objs =  env_with_err.Object('src/config', 'src/config.c') + \
         env_with_err.Object('src/barrier', 'src/barrier.c') + \
         env_with_err.Object('src/hll', 'src/hll.c') + \
+        env_with_err.Object('src/shll', 'src/shll.c') + \
         env_with_err.Object('src/hll_constants', 'src/hll_constants.c') + \
         env_with_err.Object('src/bitmap', 'src/bitmap.c') + \
         env_with_err.Object('src/set', 'src/set.c') + \
