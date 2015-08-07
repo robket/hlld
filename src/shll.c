@@ -19,7 +19,6 @@ State of The Art Cardinality Estimation Algorithm"
 
 #define REG_WIDTH 6     // Bits per register
 #define INT_WIDTH 32    // Bits in an int
-#define REG_PER_WORD 5  // floor(INT_WIDTH / REG_WIDTH)
 
 #define NUM_REG(precision) ((1 << precision))
 #define INT_CEIL(num, denom) (((num) + (denom) - 1) / (denom))
@@ -35,10 +34,53 @@ extern void MurmurHash3_x64_128(const void * key, const int len, const uint32_t 
  * @return 0 on success
  */
 int shll_init(unsigned char precision, shll_t *h) {
-	// TODO
+    // Ensure the precision is somewhat sane
+    if (precision < HLL_MIN_PRECISION || precision > HLL_MAX_PRECISION)
+        return -1;
+
+    // Store precision
+    h->precision = precision;
+
+    // Determine how many registers are needed
+    int reg = NUM_REG(precision);
+
+    // Allocate and zero out the registers
+    h->bm = NULL;
+    h->registers = calloc(reg, sizeof(fpm_list_t));
+    if (!h->registers) return -1;
     return 0;
 }
 
+static uint32_t to_uint32(uint8_t* address) {
+    uint32_t result = 0;
+    result += *address << 24;
+    result += *(address + 1) << 16;
+    result += *(address + 2) << 8;
+    result += *(address + 3);
+    return result;
+}
+
+static void to_uint8(uint32_t value, uint8_t* address) {
+    *address = (uint8_t) value >> 24;
+    *(address + 1) = (uint8_t) value >> 16;
+    *(address + 2) = (uint8_t) value >> 8;
+    *(address + 3) = (uint8_t) value;
+}
+
+static fpm_t * insert_new_fpm(fpm_list_t *fpm_list, fpm_t *last_fpm, uint32_t timestamp, uint8_t r_value) {
+    // Insert new value after last_fpm
+    fpm_t *new_fpm = calloc(1, sizeof(fpm_t));
+    if (last_fpm != NULL) {
+        last_fpm->next = new_fpm;
+    } else {
+        fpm_list->first = new_fpm;
+    }
+    new_fpm->r_value = r_value;
+    new_fpm->timestamp = timestamp;
+    new_fpm->next = NULL;
+    fpm_list->size++;
+    return new_fpm;
+}
 
 /**
  * Initializes a new HLL from a bitmap
@@ -48,7 +90,58 @@ int shll_init(unsigned char precision, shll_t *h) {
  * @return 0 on success
  */
 int shll_init_from_bitmap(unsigned char precision, shlld_bitmap *bm, shll_t *h) {
-	// TODO
+    // Ensure the precision is somewhat sane
+    if (precision < HLL_MIN_PRECISION || precision > HLL_MAX_PRECISION)
+        return -1;
+
+    // Store precision
+    h->precision = precision;
+
+    // Determine how many registers are needed
+    int reg = NUM_REG(precision);
+
+    // Allocate and zero out the registers
+    h->registers = calloc(reg, sizeof(fpm_list_t));
+    if (!h->registers) return -1;
+    int mmap_index = 0;
+    for (int i = 0; i < reg; i++) {
+        uint8_t size = *(bm->mmap +mmap_index++);
+        fpm_t *last_fpm = NULL;
+        for (int j = 0; j < size; j++) {
+            uint8_t r_value = *(bm->mmap + mmap_index++);
+            uint32_t timestamp = to_uint32((bm->mmap + mmap_index));
+            mmap_index += 4;
+            last_fpm = insert_new_fpm((h->registers + i), last_fpm, timestamp, r_value);
+        }
+    }
+    return 0;
+}
+
+void shll_to_bitmap(shll_t *h, shlld_bitmap *bitmap) {
+    int reg = NUM_REG(h->precision);
+    // Get total count of stored r-values
+    int total_r_values = 0;
+    for (int i = 0; i < reg; i++) {
+        total_r_values += h->registers[i].size;
+    }
+    // Need reg * uint8 + total_r_values * (uint8 + uint32)
+    // = (reg * + total_r_values * (1 + 4)) * uint8
+
+    int size = (reg + total_r_values * 5) * sizeof(uint8_t);
+    uint8_t* mmap = malloc(size);
+    int mmap_index = 0;
+    for (int i = 0; i < reg; i++) {
+        uint8_t number_of_r_values = h->registers[i].size;
+        *(mmap + mmap_index++) = number_of_r_values;
+        fpm_t *node = h->registers[i].first;
+        for (int j = 0; j < number_of_r_values; j++) {
+            *(mmap + mmap_index++) = node->r_value;
+            to_uint8(node->timestamp, (mmap + mmap_index));
+            mmap_index += 4;
+        }
+    }
+    bitmap->mmap = mmap;
+    bitmap->size = size;
 }
 
 
@@ -57,60 +150,73 @@ int shll_init_from_bitmap(unsigned char precision, shlld_bitmap *bm, shll_t *h) 
  * @return 0 on success
  */
 int shll_destroy(shll_t *h) {
-	// TODO
+    if (h->registers) {
+        int reg = NUM_REG(h->precision);
+        for (int i = 0; i < reg; i++) {
+            fpm_list_t fpm_list = h->registers[i];
+            fpm_t *node = fpm_list.first;
+            fpm_list.first = NULL;
+            while (node != NULL) {
+                fpm_t *next_node = node->next;
+                free(node);
+                node = next_node;
+                fpm_list.size--;
+            }
+        }
+        free(h->registers);
+        h->registers = NULL;
+    }
+    // TODO figure out what happens here when we get this from bitmap
+    //if (h->bm) {
+    //    bitmap_close(h->bm);
+    //    h->bm = NULL;
+    //}
+    return 0;
 }
 
 static int get_fpm_register(shll_t *h, int idx, uint32_t start_time) {
-	fpm_list_t fpm_list = (h->registers)[idx];
-	fpm_t* node = fpm_list.first;
+    fpm_list_t fpm_list = (h->registers)[idx];
+    fpm_t *node = fpm_list.first;
 
-	while (node != NULL && node->timestamp < start_time) {
-		node = node->next;
-	}
-	if (node != NULL) {
-		return node->r_value;
-	} else {
-		return 0;
-	}
+    while (node != NULL && node->timestamp < start_time) {
+        node = node->next;
+    }
+    if (node != NULL) {
+        return node->r_value;
+    } else {
+        return 0;
+    }
 }
 
 static void set_fpm_register(shll_t *h, int idx, uint32_t timestamp, uint8_t r_value) {
-	// Get pointer to list
-	fpm_list_t fpm_list = h->registers[idx];
-	fpm_t* node = fpm_list.first;
+    // Get pointer to list
+    fpm_list_t fpm_list = h->registers[idx];
+    fpm_t *node = fpm_list.first;
 
-	// Delete nodes older than timestamp - max_t from beginning
-	while (node != NULL && node->timestamp < timestamp - h->max_t) {
-		fpm_t* next_node = node->next;
-		free(node);
-		node = next_node;
-	}
-	fpm_list.first = node;
-    fpm_t* previous_node = node;
+    // Delete nodes older than timestamp - max_t from beginning
+    while (node != NULL && node->timestamp < timestamp - h->max_t) {
+        fpm_t *next_node = node->next;
+        free(node);
+        node = next_node;
+        fpm_list.size--;
+    }
+    fpm_list.first = node;
+    fpm_t *previous_node = node;
 
-	// Find first node with value smaller than/equal to new value
-	while (node != NULL && node->r_value > r_value) {
-		previous_node = node;
-		node = node->next;
-	}
+    // Find first node with value smaller than/equal to new value
+    while (node != NULL && node->r_value > r_value) {
+        previous_node = node;
+        node = node->next;
+    }
 
-	// Insert new value in that position
-	fpm_t* new_node = calloc(1, sizeof(fpm_t));
-	if (previous_node != NULL) {
-		previous_node->next = new_node;
-	} else {
-		fpm_list.first = new_node;
-	}
-	new_node->r_value = r_value;
-	new_node->timestamp = timestamp;
-	new_node->next = NULL;
-
-	// Delete old element and subsequent elements
-	while (node != NULL) {
-		fpm_t* next_node = node->next;
-		free(node);
-		node = next_node;
-	}
+    insert_new_fpm(&fpm_list, previous_node, timestamp, r_value);
+    // Delete old element and subsequent elements
+    while (node != NULL) {
+        fpm_t *next_node = node->next;
+        free(node);
+        node = next_node;
+        fpm_list.size--;
+    }
 }
 
 /**
@@ -317,26 +423,3 @@ double shll_error_for_precision(int prec) {
     int registers = pow(2, prec);
     return 1.04 / sqrt(registers);
 }
-
-/**
- * Computes the bytes required for a HLL of the
- * given precision.
- * @arg prec The precision to use
- * @return The bytes required or 0 on error.
- */
-uint64_t shll_bytes_for_precision(int prec) {
-	// This entire method is pointless with shll
-    // Check that the error bound is sane
-    if (prec < HLL_MIN_PRECISION || prec > HLL_MAX_PRECISION)
-        return 0;
-
-    // Determine how many registers are needed
-    int reg = NUM_REG(prec);
-
-    // Get the full words required
-    int words = INT_CEIL(reg, REG_PER_WORD);
-
-    // Convert to byte size
-    return words * sizeof(uint32_t);
-}
-

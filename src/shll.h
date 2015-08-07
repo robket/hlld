@@ -9,13 +9,14 @@
 #define HLL_MAX_PRECISION 18     // 262,144 registers
 
 typedef struct fpm {
-	uint32_t timestamp;
-	uint8_t r_value;
-	struct fpm *next;
+    uint32_t timestamp;
+    uint8_t r_value;
+    struct fpm *next;
 } fpm_t; // FuturePossibleMaximum
 
 typedef struct fpm_list {
-	fpm_t *first; // First is oldest and largest
+    fpm_t *first; // First is oldest and largest
+    uint8_t size;
 } fpm_list_t;
 
 typedef struct {
@@ -86,13 +87,5 @@ int shll_precision_for_error(double err);
  * or zero on error.
  */
 double shll_error_for_precision(int prec);
-
-/**
- * Computes the bytes required for a HLL of the
- * given precision.
- * @arg prec The precision to use
- * @return The bytes required or 0 on error.
- */
-uint64_t shll_bytes_for_precision(int prec);
 
 #endif

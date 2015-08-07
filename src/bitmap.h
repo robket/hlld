@@ -18,6 +18,13 @@ typedef struct {
     unsigned char* mmap; // Starting address of the bitmap region
 } hlld_bitmap;
 
+typedef struct {
+    bitmap_mode mode;
+    int fileno;          // Underlying fileno
+    uint64_t size;       // Size of bitmap in bytes
+    uint8_t* mmap; // Starting address of the bitmap region
+} shlld_bitmap;
+
 /**
  * Returns a hlld_bitmap pointer from a file handle
  * that is already opened with read/write privileges.
